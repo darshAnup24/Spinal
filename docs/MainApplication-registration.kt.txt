@@ -1,0 +1,7 @@
+// Merge this into the generated MainApplication.kt; do not replace the whole file.
+import com.unreadproblem.UnreadProblemPackage
+
+// Inside the generated ReactNativeHost:
+override fun getPackages() = PackageList(this).packages.apply {
+    add(UnreadProblemPackage())
+}

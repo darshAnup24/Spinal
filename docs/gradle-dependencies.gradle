@@ -1,0 +1,10 @@
+// Merge into android/app/build.gradle. Keep the generated project's existing versions.
+// Add `id 'kotlin-kapt'` to the plugins block if your template uses the Groovy DSL.
+def roomVersion = '2.8.4'
+implementation "androidx.room:room-runtime:$roomVersion"
+implementation "androidx.room:room-ktx:$roomVersion"
+kapt "androidx.room:room-compiler:$roomVersion"
+implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2'
+implementation 'androidx.core:core-ktx:1.17.0'
+// Optional on-device LLM runtime. Verify current stable version for your Android/Kotlin toolchain.
+implementation 'com.google.ai.edge.litertlm:litertlm-android:0.16.1'
