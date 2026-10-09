@@ -144,9 +144,21 @@ function TodosScreen({actions, category, onComplete}: {actions: ActionItem[]; ca
 }
 
 function SettingsScreen({access, model, messageCount, actionCount, onRefresh}: {access: boolean; model: boolean; messageCount: number; actionCount: number; onRefresh: () => void}) {
+  const [installing, setInstalling] = useState(false);
+  const installModel = async () => {
+    if (installing) return;
+    setInstalling(true);
+    try {
+      const installed = await Native.downloadLlmModel();
+      if (installed) await Native.restartApp();
+    } catch (error) {
+      Alert.alert('Could not install local model', String(error));
+      setInstalling(false);
+    }
+  };
   return <ScrollView contentContainerStyle={styles.pageContent}><FadeIn><Text style={styles.kicker}>PRIVACY · DEVICE</Text><Text style={styles.pageTitle}>SETTINGS</Text></FadeIn>
-    <Panel style={styles.settingCard}><View style={styles.settingRow}><Text style={styles.settingLabel}>NOTIFICATION ACCESS</Text><Text style={[styles.settingValue, {color: access ? color.strong : color.pivot}]}>{access ? 'GRANTED' : 'OFF'}</Text></View>{!access && <Pressable onPress={Native.openNotificationSettings}><Text style={styles.settingAction}>OPEN ANDROID SETTINGS →</Text></Pressable>}</Panel>
-    <Panel style={styles.settingCard}><View style={styles.settingRow}><Text style={styles.settingLabel}>LOCAL AI MODEL</Text><Text style={[styles.settingValue, {color: model ? color.strong : color.pivot}]}>{model ? 'READY' : 'NOT INSTALLED'}</Text></View><Text style={styles.settingDescription}>The Home chat requires a compatible LiteRT-LM model stored in the app model directory.</Text></Panel>
+    <Panel style={styles.settingCard}><View style={styles.settingRow}><Text style={styles.settingLabel}>NOTIFICATION ACCESS</Text><Text style={[styles.settingValue, {color: access ? color.strong : color.pivot}]}>{access ? 'GRANTED' : 'OFF'}</Text></View>{!access && <Pressable onPress={() => Native.openNotificationSettings()}><Text style={styles.settingAction}>OPEN ANDROID SETTINGS →</Text></Pressable>}</Panel>
+    <Panel style={styles.settingCard}><View style={styles.settingRow}><Text style={styles.settingLabel}>LOCAL AI MODEL</Text><Text style={[styles.settingValue, {color: model ? color.strong : color.pivot}]}>{model ? 'READY' : 'NOT INSTALLED'}</Text></View><Text style={styles.settingDescription}>Download the compatible 284 MB LiteRT-LM model over HTTPS. It is stored privately on this device and never uploaded.</Text>{!model && <Pressable onPress={installModel} disabled={installing}><Text style={[styles.settingAction, installing && styles.disabled]}>{installing ? 'DOWNLOADING · RESTARTING…' : 'DOWNLOAD LOCAL MODEL →'}</Text></Pressable>}</Panel>
     <View style={styles.metricRow}><Metric value={messageCount} label="CAPTURED" /><Metric value={actionCount} label="OPEN TODOS" /></View><Pressable onPress={onRefresh} style={({pressed}) => [styles.refreshButton, pressed && styles.pressed]}><Text style={styles.refreshText}>REFRESH STATUS ↻</Text></Pressable>
   </ScrollView>;
 }

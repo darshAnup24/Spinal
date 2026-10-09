@@ -25,14 +25,48 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import androidx.room.withTransaction
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 class UnreadProblemModule(private val ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) {
+    private val modelDownloadUrl = "https://huggingface.co/litert-community/functiongemma-mobile-actions_q8_ekv1024.litertlm/resolve/main/mobile-actions_q8_ekv1024.litertlm?download=true"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val db = AppDatabase.getInstance(ctx)
     private var voicePromise: Promise? = null
     private val voiceRequestCode = 7412
+    private var modelPromise: Promise? = null
+    private val modelRequestCode = 7413
     private val activityListener: ActivityEventListener = object : BaseActivityEventListener() {
-        override fun onActivityResult(activity: Activity?, requestCode: Int, resultCode: Int, data: Intent?) {
+        override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
+            if (requestCode == modelRequestCode) {
+                val pending = modelPromise ?: return
+                modelPromise = null
+                if (resultCode != Activity.RESULT_OK || data?.data == null) {
+                    pending.resolve(false)
+                    return
+                }
+                val uri = data.data ?: return
+                scope.launch {
+                    try {
+                        val directory = File(ctx.filesDir, "models").apply { mkdirs() }
+                        val temporary = File(directory, "model.litertlm.tmp")
+                        ctx.contentResolver.openInputStream(uri).use { input ->
+                            requireNotNull(input) { "Unable to read the selected model" }
+                            temporary.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        require(temporary.length() > 0L) { "The selected model file is empty" }
+                        val target = File(directory, "model.litertlm")
+                        check(temporary.renameTo(target) || temporary.copyTo(target, overwrite = true).let { temporary.delete(); true }) {
+                            "Unable to install the selected model"
+                        }
+                        pending.resolve(true)
+                    } catch (error: Exception) {
+                        pending.reject("MODEL_INSTALL_FAILED", error)
+                    }
+                }
+                return
+            }
             if (requestCode != voiceRequestCode) return
             val pending = voicePromise ?: return
             voicePromise = null
@@ -61,8 +95,65 @@ class UnreadProblemModule(private val ctx: ReactApplicationContext) : ReactConte
         p.resolve(Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
     }
     @ReactMethod fun isLlmModelInstalled(p: Promise) { p.resolve(LocalLlm(ctx).isModelInstalled()) }
+    @ReactMethod fun downloadLlmModel(p: Promise) { scope.launch {
+        val connection = (URL(modelDownloadUrl).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 60_000
+            requestMethod = "GET"
+            instanceFollowRedirects = true
+        }
+        try {
+            connection.connect()
+            require(connection.responseCode in 200..299) { "Model download failed with HTTP ${connection.responseCode}" }
+            val directory = File(ctx.filesDir, "models").apply { mkdirs() }
+            val temporary = File(directory, "model.litertlm.download")
+            connection.inputStream.use { input ->
+                temporary.outputStream().use { output ->
+                    val buffer = ByteArray(1024 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                    }
+                }
+            }
+            require(temporary.length() > 0L) { "Downloaded model is empty" }
+            val target = File(directory, "model.litertlm")
+            check(temporary.renameTo(target) || temporary.copyTo(target, overwrite = true).let { temporary.delete(); true }) {
+                "Unable to install downloaded model"
+            }
+            p.resolve(true)
+        } catch (error: Exception) {
+            p.reject("MODEL_DOWNLOAD_FAILED", error)
+        } finally {
+            connection.disconnect()
+        }
+    } }
+    @ReactMethod fun pickLlmModel(p: Promise) {
+        val activity = ctx.getCurrentActivity()
+        if (activity == null) { p.reject("NO_ACTIVITY", "Model installation needs an active screen"); return }
+        if (modelPromise != null) { p.reject("MODEL_BUSY", "Model installation is already active"); return }
+        modelPromise = p
+        try {
+            activity.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+            }, modelRequestCode)
+        } catch (error: Exception) {
+            modelPromise = null
+            p.reject("MODEL_PICKER_UNAVAILABLE", error)
+        }
+    }
+    @ReactMethod fun restartApp(p: Promise) {
+        val activity = ctx.getCurrentActivity()
+        if (activity == null) { p.reject("NO_ACTIVITY", "App restart needs an active screen"); return }
+        activity.runOnUiThread {
+            activity.recreate()
+            p.resolve(true)
+        }
+    }
     @ReactMethod fun startVoiceInput(p: Promise) {
-        val activity = currentActivity
+        val activity = ctx.getCurrentActivity()
         if (activity == null) { p.reject("NO_ACTIVITY", "Voice input needs an active screen"); return }
         if (voicePromise != null) { p.reject("VOICE_BUSY", "Voice input is already active"); return }
         val intent = Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -72,7 +163,7 @@ class UnreadProblemModule(private val ctx: ReactApplicationContext) : ReactConte
         }
         try {
             voicePromise = p
-            activity.startActivityForResult(intent, voiceRequestCode)
+            activity!!.startActivityForResult(intent, voiceRequestCode)
         } catch (e: Exception) {
             voicePromise = null
             p.reject("VOICE_UNAVAILABLE", e)
@@ -91,7 +182,7 @@ class UnreadProblemModule(private val ctx: ReactApplicationContext) : ReactConte
         })
     }
 
-    @ReactMethod fun getRecentMessages(limit: Int, p: Promise) = scope.launch {
+    @ReactMethod fun getRecentMessages(limit: Int, p: Promise) { scope.launch {
         try {
             val rows = db.messageDao().getRecent(limit.coerceIn(1, 500))
             val array = Arguments.createArray()
@@ -102,8 +193,8 @@ class UnreadProblemModule(private val ctx: ReactApplicationContext) : ReactConte
             }) }
             p.resolve(array)
         } catch (e: Exception) { p.reject("READ_FAILED", e) }
-    }
-    @ReactMethod fun getOpenActions(limit: Int, p: Promise) = scope.launch {
+    } }
+    @ReactMethod fun getOpenActions(limit: Int, p: Promise) { scope.launch {
         try {
             val rows = db.actionItemDao().getOpen(limit.coerceIn(1, 200)); val array = Arguments.createArray()
             rows.forEach { row -> array.pushMap(Arguments.createMap().apply {
@@ -112,8 +203,8 @@ class UnreadProblemModule(private val ctx: ReactApplicationContext) : ReactConte
                 if (row.category == null) putNull("category") else putString("category", row.category)
             }) }; p.resolve(array)
         } catch (e: Exception) { p.reject("ACTIONS_FAILED", e) }
-    }
-    @ReactMethod fun setActionStatus(id: String, status: String, p: Promise) = scope.launch {
+    } }
+    @ReactMethod fun setActionStatus(id: String, status: String, p: Promise) { scope.launch {
         try {
             require(status in setOf("OPEN", "DONE", "DISMISSED")) { "Unsupported action status" }
             if (status != "OPEN") {
@@ -126,8 +217,8 @@ class UnreadProblemModule(private val ctx: ReactApplicationContext) : ReactConte
             p.resolve(true)
         }
         catch (e: Exception) { p.reject("ACTION_UPDATE_FAILED", e) }
-    }
-    @ReactMethod fun snoozeReminder(id: String, timestamp: Double, p: Promise) = scope.launch {
+    } }
+    @ReactMethod fun snoozeReminder(id: String, timestamp: Double, p: Promise) { scope.launch {
         try {
             val at = timestamp.toLong()
             require(at > System.currentTimeMillis()) { "Snooze time must be in the future" }
@@ -140,22 +231,22 @@ class UnreadProblemModule(private val ctx: ReactApplicationContext) : ReactConte
             }
             p.resolve(true)
         } catch (e: Exception) { p.reject("REMINDER_SNOOZE_FAILED", e) }
-    }
-    @ReactMethod fun cancelReminder(id: String, p: Promise) = scope.launch {
+    } }
+    @ReactMethod fun cancelReminder(id: String, p: Promise) { scope.launch {
         try {
             ReminderScheduler.cancel(ctx, id)
             db.reminderDao().setStatus(id, "CANCELLED", null)
             p.resolve(true)
         } catch (e: Exception) { p.reject("REMINDER_CANCEL_FAILED", e) }
-    }
-    @ReactMethod fun acknowledgeReminder(id: String, p: Promise) = scope.launch {
+    } }
+    @ReactMethod fun acknowledgeReminder(id: String, p: Promise) { scope.launch {
         try {
             ReminderScheduler.cancel(ctx, id)
             db.reminderDao().setStatus(id, "ACKNOWLEDGED", System.currentTimeMillis())
             p.resolve(true)
         } catch (e: Exception) { p.reject("REMINDER_ACK_FAILED", e) }
-    }
-    @ReactMethod fun getConversationSummary(conversationKey: String, p: Promise) = scope.launch {
+    } }
+    @ReactMethod fun getConversationSummary(conversationKey: String, p: Promise) { scope.launch {
         try {
             val rows = db.messageDao().getConversation(conversationKey, 30).reversed()
             val llm = LocalLlm(ctx)
@@ -163,8 +254,8 @@ class UnreadProblemModule(private val ctx: ReactApplicationContext) : ReactConte
             llm.close()
             p.resolve(summary ?: rows.takeLast(10).joinToString("\n") { "• ${it.messageText.take(220)}" })
         } catch (e: Exception) { p.reject("SUMMARY_FAILED", e) }
-    }
-    @ReactMethod fun getTodaySummary(p: Promise) = scope.launch {
+    } }
+    @ReactMethod fun getTodaySummary(p: Promise) { scope.launch {
         try {
             val since = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
             val rows = db.messageDao().getSince(since, 250)
@@ -174,8 +265,8 @@ class UnreadProblemModule(private val ctx: ReactApplicationContext) : ReactConte
             llm.close()
             p.resolve(generated ?: rows.takeLast(12).joinToString("\n") { "• ${it.conversation}: ${it.messageText.take(220)}" })
         } catch (e: Exception) { p.reject("TODAY_SUMMARY_FAILED", e) }
-    }
-    @ReactMethod fun askHistory(question: String, p: Promise) = scope.launch {
+    } }
+    @ReactMethod fun askHistory(question: String, p: Promise) { scope.launch {
         try {
             require(question.isNotBlank()) { "Question is required" }
             val messages = db.messageDao().getRecent(250).reversed()
@@ -194,11 +285,11 @@ $context""")
             llm.close()
             p.resolve(generated ?: "")
         } catch (e: Exception) { p.reject("HISTORY_ANSWER_FAILED", e) }
-    }
-    @ReactMethod fun acknowledgeMessage(id: String, p: Promise) = scope.launch {
+    } }
+    @ReactMethod fun acknowledgeMessage(id: String, p: Promise) { scope.launch {
         try { db.messageDao().acknowledge(id); p.resolve(true) } catch (e: Exception) { p.reject("ACK_FAILED", e) }
-    }
-    @ReactMethod fun deleteAllMessages(p: Promise) = scope.launch {
+    } }
+    @ReactMethod fun deleteAllMessages(p: Promise) { scope.launch {
         try {
             db.reminderDao().getFutureScheduled(System.currentTimeMillis()).forEach { ReminderScheduler.cancel(ctx, it.id) }
             db.withTransaction {
@@ -208,10 +299,12 @@ $context""")
             }
             p.resolve(true)
         } catch (e: Exception) { p.reject("DELETE_FAILED", e) }
-    }
+    } }
     override fun invalidate() {
         voicePromise?.reject("VOICE_CANCELLED", "The app closed voice input")
         voicePromise = null
+        modelPromise?.reject("MODEL_CANCELLED", "The app closed model selection")
+        modelPromise = null
         ctx.removeActivityEventListener(activityListener)
         UnreadProblemEvents.detach(ctx); scope.cancel(); super.invalidate()
     }

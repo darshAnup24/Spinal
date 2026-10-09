@@ -123,7 +123,7 @@ dependencies {
     kapt("androidx.room:room-compiler:$roomVersion")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     // 0.16.1 is the newest release built with Kotlin 2.2.x, matching RN 0.87's toolchain.
-    implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.1")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.9.0-alpha06")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")
